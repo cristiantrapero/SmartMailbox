@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include "Keypad.h"
-#include "BluetoothSerial.h"
+#include "NimBLEDevice.h"
 
 // WIFI credentials
 const char *WIFI_SSID = "test";
@@ -9,7 +9,8 @@ const char *WIFI_PASSWORD = "test";
 const String hostname = "SmartMailbox";
 
 // Bluetooth serial
-BluetoothSerial bluetoothSerial;
+#define SERVICE_UUID "2af412d8-3e7e-11ec-9bbc-0242ac130002"
+#define CHARACTERISTIC_UUID "b50b1050-196d-42df-bfdc-674c31ec2699"
 
 // Keypad size
 const byte ROWS = 4;
@@ -31,7 +32,6 @@ Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 void connectWiFi();
 void WiFiStationDisconnected(WiFiEvent_t event, WiFiEventInfo_t info);
 void enableBluetooth();
-void bluetoothCallback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param);
 
 void setup()
 {
@@ -86,6 +86,22 @@ void WiFiStationDisconnected(WiFiEvent_t event, WiFiEventInfo_t info)
 
 void enableBluetooth()
 {
-  bluetoothSerial.begin(hostname);
+  BLEDevice::init("SmartMailbox");
+  BLEServer *pServer = BLEDevice::createServer();
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+  BLECharacteristic *pCharacteristic = pService->createCharacteristic(
+      CHARACTERISTIC_UUID,
+      NIMBLE_PROPERTY::READ |
+          NIMBLE_PROPERTY::WRITE);
+
+  pCharacteristic->setValue("SmartMailbox");
+  pService->start();
+  // BLEAdvertising *pAdvertising = pServer->getAdvertising();  // this still is working for backward compatibility
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(0x06); // functions that help with iPhone connections issue
+  pAdvertising->setMinPreferred(0x12);
+  BLEDevice::startAdvertising();
   Serial.println("\nThe " + hostname + " bluetooth started\n");
 }
