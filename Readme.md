@@ -15,6 +15,13 @@ The hardware used in the project will be the following:
 5. [Rele 5V](https://www.amazon.es/dp/B07BVXT1ZK/ref=cm_sw_r_tw_dp_871TCR1Q2JNB6FPTSF2Z)
 
 ## Software
-TODO
+Libraries:
+1. Bluetooth Low Energy (BLE) Library: https://github.com/h2zero/NimBLE-Arduino
+2. Keypad Library: https://playground.arduino.cc/Code/Keypad/
+## How to run
+1. Open the project in PlatformIO
+2. Connect ESP32 to PC
+3. Build and upload the code to the ESP32
+4. Wait
 ## Deployment
 TODO

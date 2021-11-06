@@ -11,6 +11,8 @@ const String hostname = "SmartMailbox";
 // Bluetooth serial
 #define SERVICE_UUID "2af412d8-3e7e-11ec-9bbc-0242ac130002"
 #define CHARACTERISTIC_UUID "b50b1050-196d-42df-bfdc-674c31ec2699"
+BLEServer *pServer = NULL;
+BLECharacteristic *pCharacteristic = NULL;
 
 // Keypad size
 const byte ROWS = 4;
@@ -84,19 +86,46 @@ void WiFiStationDisconnected(WiFiEvent_t event, WiFiEventInfo_t info)
   connectWiFi();
 }
 
+class MyServerCallbacks: public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) {
+      Serial.println("Device connected");
+    };
+
+    void onDisconnect(BLEServer* pServer) {
+      Serial.println("Device disconnected");
+
+    }
+};
+
+class MyCallbacks: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+      std::string rxValue = pCharacteristic->getValue();
+
+      if (rxValue.length() > 0) {
+        Serial.println("*********");
+        Serial.print("Received value: ");
+        for (int i = 0; i < rxValue.length(); i++)
+          Serial.print(rxValue[i]);
+
+        Serial.println();
+        Serial.println("*********");
+      }
+    }
+};
+
+
 void enableBluetooth()
 {
   BLEDevice::init("SmartMailbox");
-  BLEServer *pServer = BLEDevice::createServer();
+  pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
   BLEService *pService = pServer->createService(SERVICE_UUID);
-  BLECharacteristic *pCharacteristic = pService->createCharacteristic(
+  pCharacteristic = pService->createCharacteristic(
       CHARACTERISTIC_UUID,
-      NIMBLE_PROPERTY::READ |
-          NIMBLE_PROPERTY::WRITE);
-
-  pCharacteristic->setValue("SmartMailbox");
+        NIMBLE_PROPERTY::WRITE);
+  pCharacteristic->setCallbacks(new MyCallbacks());
   pService->start();
-  // BLEAdvertising *pAdvertising = pServer->getAdvertising();  // this still is working for backward compatibility
+  
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
   pAdvertising->setScanResponse(true);
