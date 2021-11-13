@@ -1,7 +1,10 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <U8g2lib.h>
+#include <PubSubClient.h>
 #include "Keypad.h"
 #include "NimBLEDevice.h"
+#include "time.h"
 
 // WIFI credentials
 const char *WIFI_SSID = "test";
@@ -13,6 +16,25 @@ const String HOSTNAME = "SmartMailbox";
 #define CHARACTERISTIC_UUID "b50b1050-196d-42df-bfdc-674c31ec2699"
 BLEServer *pServer = NULL;
 BLECharacteristic *pCharacteristic = NULL;
+
+// NTP configuration
+const char* NTPSERVER = "pool.ntp.org";
+const long  GMTOFFSET = 2;
+const int   DAYLIGHTOFFSET = 3600;
+
+// MQTT configuration
+const char* MQTTSERVER = "mqtt.cristiantrapero.es";
+const int MQTTPORT = 1883;
+const char* MQTTUSER = "user";
+const char* MQTTPASSWORD = "password";
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+const char* PINTOPIC = "/smartmailbox/pin";
+const char* RELAYTOPIC = "/smartmailbox/relay";
+const char* LETTERTOPIC = "/smartmailbox/letter";
+const char* OPENTOPIC = "/smartmailbox/open";
+const char* OPENEDTOPIC = "/smartmailbox/opened";
 
 // Keypad size
 const byte ROWS = 4;
@@ -29,8 +51,8 @@ char keys[ROWS][COLS] = {
 byte rowPins[ROWS] = {13, 12, 14, 27};
 byte colPins[COLS] = {26, 25, 33, 32};
 Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
-const String password = "1234"; //TODO: Get from eeprom
-String inputPassword;
+String mailboxPIN = "1234"; //TODO: Get from eeprom
+String inputPIN;
 
 // Constants declarations
 const int CALL_BUTTON = 4;
@@ -42,14 +64,20 @@ const int TRIGGER = 18;
 int pressedButton = 0;
 long usDistance;
 long usTime;
+unsigned long lastLetterCall;
+
 
 // Functions prototype declaration
-void connectWiFi();
+void connectToWiFi();
 void enableBluetooth();
+void changePasswordPin(String pin);
 void openMailbox();
-void sendMailboxOpeningNotification();
-void evaluateSendLetterNotification(int usDistance);
+void reconnectMQTT();
+void sendTimeMessageToTopic(const char* topic);
+void sendOpenMailboxRequest();
+void sendLetterNotification(int usDistance);
 void WiFiStationDisconnected(WiFiEvent_t event, WiFiEventInfo_t info);
+void mqttCallback(char* topic, byte* message, unsigned int length);
 
 void setup()
 {
@@ -58,7 +86,10 @@ void setup()
   // WiFi configuration
   // WiFi event on disconnect, retry the conexion
   WiFi.onEvent(WiFiStationDisconnected, SYSTEM_EVENT_STA_DISCONNECTED);
-  connectWiFi();
+  connectToWiFi();
+
+  // NTP
+  configTime(GMTOFFSET, DAYLIGHTOFFSET, NTPSERVER);
 
   // Bluetooth configuration
   enableBluetooth();
@@ -73,6 +104,30 @@ void setup()
 
   // Relay
   pinMode(DOOR_RELAY, OUTPUT);
+
+  // MQTT
+  client.setServer(MQTTSERVER, MQTTPORT);
+  client.setCallback(mqttCallback);
+}
+
+void mqttCallback(char* topic, byte* message, unsigned int length) {
+  Serial.print("Message arrived on topic: ");
+  Serial.print(topic);
+  Serial.print(". Message: ");
+  String command;
+  
+  for (int i = 0; i < length; i++) {
+    Serial.print((char)message[i]);
+    command += (char)message[i];
+  }
+  Serial.println();
+  if (String(topic) == RELAYTOPIC) {
+    if(command == "on"){
+      openMailbox();
+    }
+  } else if (String(topic) == PINTOPIC){
+      changePasswordPin(command);
+  }
 }
 
 void loop()
@@ -87,11 +142,11 @@ void loop()
 
     if (pressedKey == '*')
     {
-      inputPassword = "";
+      inputPIN = "";
     }
     else if (pressedKey == '#')
     {
-      if (password == inputPassword)
+      if (mailboxPIN == inputPIN)
       {
         Serial.println("Password is correct. Opening mailbox.");
         openMailbox();
@@ -101,11 +156,11 @@ void loop()
         Serial.println("Password is incorrect, try again.");
       }
 
-      inputPassword = ""; // clear input password
+      inputPIN = "";
     }
     else
     {
-      inputPassword += pressedKey;
+      inputPIN += pressedKey;
     }
   }
 
@@ -114,7 +169,7 @@ void loop()
 
   if (pressedButton == HIGH)
   {
-    sendMailboxOpeningNotification();
+    sendOpenMailboxRequest();
   }
 
   // Ultrasonic calculations
@@ -124,32 +179,74 @@ void loop()
 
   usTime = pulseIn(ECHO, HIGH);
   usDistance = usTime / 59;
-  evaluateSendLetterNotification(usDistance);
+  sendLetterNotification(usDistance);
+
+  if (!client.connected()) {
+    reconnectMQTT();
+  }
+  client.loop();
 }
 
-void sendMailboxOpeningNotification(){
-  // TODO: Send mailbox opening notification
-  Serial.println("Send mailbox opening notification");
+void reconnectMQTT() {
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    if (client.connect("SmartMailbox", MQTTUSER, MQTTPASSWORD)) {
+      Serial.println("\nMQTT connected");
+      client.subscribe(PINTOPIC);
+      client.subscribe(RELAYTOPIC);
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
+
+void sendOpenMailboxRequest(){
+  Serial.println("Send mailbox open request");
+  sendTimeMessageToTopic(OPENTOPIC);
+}
+
+void changePasswordPin(String pin){
+  mailboxPIN = pin;
 }
 
 void openMailbox()
 {
+  Serial.println("Open smartmailbox");
+  Serial.println("Send mailbox opened notification");
+  sendTimeMessageToTopic(OPENEDTOPIC);
   digitalWrite(DOOR_RELAY, HIGH);
   delay(5000);
   digitalWrite(DOOR_RELAY, LOW);
-  // TODO: send opened notification
 }
 
-void evaluateSendLetterNotification(int usDistance)
+void sendLetterNotification(int usDistance)
 {
-  // TODO: Add delay for false positive
-  if (usDistance < 7)
-  {
-    Serial.println("Send recieved letter notification");
+    if (usDistance < 7)
+    {
+      if (millis() - lastLetterCall >= 10*1000UL){
+        lastLetterCall = millis();
+        Serial.println("Send mailbox letter notification");
+        sendTimeMessageToTopic(LETTERTOPIC);
+    }
   }
 }
 
-void connectWiFi()
+void sendTimeMessageToTopic(const char* topic) {
+  struct tm timeinfo;
+  if(!getLocalTime(&timeinfo)){
+    Serial.println("Failed to obtain time");
+    return;
+  }
+  char timestamp[50];
+  strftime(timestamp, sizeof(timestamp), "%A, %B %d %Y %H:%M:%S", &timeinfo);
+  client.publish(topic, timestamp);
+}
+
+void connectToWiFi()
 {
   WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);
   WiFi.setHostname(HOSTNAME.c_str());
@@ -173,7 +270,7 @@ void WiFiStationDisconnected(WiFiEvent_t event, WiFiEventInfo_t info)
   Serial.println("Disconnected from WiFi access point");
   Serial.print("WiFi lost connection. Reason: ");
   Serial.println(info.disconnected.reason);
-  connectWiFi();
+  connectToWiFi();
 }
 
 class MyServerCallbacks : public BLEServerCallbacks
@@ -226,5 +323,5 @@ void enableBluetooth()
   pAdvertising->setMinPreferred(0x06); // functions that help with iPhone connections issue
   pAdvertising->setMinPreferred(0x12);
   BLEDevice::startAdvertising();
-  Serial.println("\nThe " + HOSTNAME + " bluetooth started\n");
+  Serial.println("\nThe " + HOSTNAME + " bluetooth started");
 }
