@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <U8g2lib.h>
 #include <PubSubClient.h>
+#include <EEPROM.h>
 #include "Keypad.h"
 #include "NimBLEDevice.h"
 #include "time.h"
@@ -19,14 +20,14 @@ BLECharacteristic *pCharacteristic = NULL;
 
 // NTP configuration
 const char* NTPSERVER = "pool.ntp.org";
-const long  GMTOFFSET = 2;
+const long  GMTOFFSET = 1;
 const int   DAYLIGHTOFFSET = 3600;
 
 // MQTT configuration
 const char* MQTTSERVER = "mqtt.cristiantrapero.es";
 const int MQTTPORT = 1883;
-const char* MQTTUSER = "user";
-const char* MQTTPASSWORD = "password";
+const char* MQTTUSER = "test";
+const char* MQTTPASSWORD = "test";
 WiFiClient espClient;
 PubSubClient client(espClient);
 
@@ -65,7 +66,11 @@ int pressedButton = 0;
 long usDistance;
 long usTime;
 unsigned long lastLetterCall;
+unsigned long lastOpenCall;
 
+// EEPROM to save PINCODE. MAX 8 digits
+int pinAddr = 0;
+#define EEPROM_SIZE 8
 
 // Functions prototype declaration
 void connectToWiFi();
@@ -78,10 +83,16 @@ void sendOpenMailboxRequest();
 void sendLetterNotification(int usDistance);
 void WiFiStationDisconnected(WiFiEvent_t event, WiFiEventInfo_t info);
 void mqttCallback(char* topic, byte* message, unsigned int length);
+String read_word(int addr);
+void write_word(int addr, String word);
 
 void setup()
 {
   Serial.begin(9600);
+
+  // EEPROM for pincode
+  EEPROM.begin(EEPROM_SIZE);
+  mailboxPIN = read_word(pinAddr);
 
   // WiFi configuration
   // WiFi event on disconnect, retry the conexion
@@ -205,12 +216,51 @@ void reconnectMQTT() {
 }
 
 void sendOpenMailboxRequest(){
-  Serial.println("Send mailbox open request");
-  sendTimeMessageToTopic(OPENTOPIC);
+  if (millis() - lastOpenCall >= 5*1000UL){
+    lastOpenCall = millis();
+    Serial.println("Send mailbox open request");
+    sendTimeMessageToTopic(OPENTOPIC);
+  }
 }
 
 void changePasswordPin(String pin){
   mailboxPIN = pin;
+  write_word(pinAddr, pin);
+}
+
+String read_word(int addr)
+{
+  String word;
+  char readChar;
+  int i = addr;
+
+  while (readChar != '\0')
+  {
+    readChar = char(EEPROM.read(i));
+    delay(10);
+    i++;
+
+    if (readChar != '\0')
+    {
+      word += readChar;
+    }
+  }
+
+  return word;
+}
+
+void write_word(int addr, String word)
+{
+  delay(10);
+  int str_len = word.length() + 1;
+
+  for (int i = addr; i < str_len + addr; ++i)
+  {
+    EEPROM.write(i, word.charAt(i - addr));
+  }
+
+  EEPROM.write(str_len + addr, '\0');
+  EEPROM.commit();
 }
 
 void openMailbox()
