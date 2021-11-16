@@ -18,10 +18,25 @@ The hardware used in the project will be the following:
 Libraries:
 1. Bluetooth Low Energy (BLE) Library: https://github.com/h2zero/NimBLE-Arduino
 2. Keypad Library: https://playground.arduino.cc/Code/Keypad/
+3. LCD Screen U8g2: https://github.com/olikraus/u8g2/
+4. MQTT Arduino: https://github.com/knolleary/pubsubclient
+
 ## How to run
 1. Open the project in PlatformIO
 2. Connect ESP32 to PC
-3. Build and upload the code to the ESP32
-4. Wait
+3. Change WIFI_SSID and WIFI_PASSWORD
+4. Change MQTT configuration parameters
+5. Build and upload the code to the ESP32
+6. Just enjoy!
+
 ## Deployment
-TODO
+1. Deploy a MQTT server on a public server
+2. Modify the MQTT configuration parameters in the project
+3. Load the project in a ESP32
+
+
+## TODO tasks
+1. Add LCD screen messages
+2. User EEPROM in pin code and WiFi parameters
+3. Disable BLE advertising when is connected to a smarphone
+4. Encrypt comunications

@@ -1,11 +1,15 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <SPI.h>
 #include <U8g2lib.h>
 #include <PubSubClient.h>
 #include <EEPROM.h>
 #include "Keypad.h"
 #include "NimBLEDevice.h"
 #include "time.h"
+
+// OLED Display
+U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 
 // WIFI credentials
 const char *WIFI_SSID = "test";
@@ -14,13 +18,15 @@ const String HOSTNAME = "SmartMailbox";
 
 // Bluetooth serial
 #define SERVICE_UUID "2af412d8-3e7e-11ec-9bbc-0242ac130002"
-#define CHARACTERISTIC_UUID "b50b1050-196d-42df-bfdc-674c31ec2699"
+#define PIN_CHARACTERISTIC_UUID "12fa1c0a-25cc-4281-9c22-8e7951b1ac03"
+#define OPEN_CHARACTERISTIC_UUID "e7a6ec42-2713-4484-81d5-39e5d3e9060b"
 BLEServer *pServer = NULL;
-BLECharacteristic *pCharacteristic = NULL;
+BLECharacteristic *openCharacteristic = NULL;
+BLECharacteristic *pinCharacteristic = NULL;
 
 // NTP configuration
 const char* NTPSERVER = "pool.ntp.org";
-const long  GMTOFFSET = 1;
+const long  GMTOFFSET = 3600;
 const int   DAYLIGHTOFFSET = 3600;
 
 // MQTT configuration
@@ -31,11 +37,15 @@ const char* MQTTPASSWORD = "test";
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-const char* PINTOPIC = "/smartmailbox/pin";
-const char* RELAYTOPIC = "/smartmailbox/relay";
-const char* LETTERTOPIC = "/smartmailbox/letter";
-const char* OPENTOPIC = "/smartmailbox/open";
-const char* OPENEDTOPIC = "/smartmailbox/opened";
+// Reciever topics
+const char* PINTOPIC = "smartmailbox/pin";
+const char* RELAYTOPIC = "smartmailbox/relay";
+
+// Sender topics
+const char* LETTERTOPIC = "smartmailbox/letter";
+const char* OPENTOPIC = "smartmailbox/openrequest";
+const char* OPENEDTOPIC = "smartmailbox/opened";
+const char* PINCHANGEDTOPIC = "smartmailbox/pinchanged";
 
 // Keypad size
 const byte ROWS = 4;
@@ -50,14 +60,14 @@ char keys[ROWS][COLS] = {
 
 // Keypad pinout and variables
 byte rowPins[ROWS] = {13, 12, 14, 27};
-byte colPins[COLS] = {26, 25, 33, 32};
+byte colPins[COLS] = {23, 25, 33, 32};
 Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 String mailboxPIN = "1234"; //TODO: Get from eeprom
 String inputPIN;
 
 // Constants declarations
 const int CALL_BUTTON = 4;
-const int DOOR_RELAY = 15;
+const int DOOR_RELAY = 26;
 const int ECHO = 19;
 const int TRIGGER = 18;
 
@@ -67,10 +77,6 @@ long usDistance;
 long usTime;
 unsigned long lastLetterCall;
 unsigned long lastOpenCall;
-
-// EEPROM to save PINCODE. MAX 8 digits
-int pinAddr = 0;
-#define EEPROM_SIZE 8
 
 // Functions prototype declaration
 void connectToWiFi();
@@ -89,10 +95,6 @@ void write_word(int addr, String word);
 void setup()
 {
   Serial.begin(9600);
-
-  // EEPROM for pincode
-  EEPROM.begin(EEPROM_SIZE);
-  mailboxPIN = read_word(pinAddr);
 
   // WiFi configuration
   // WiFi event on disconnect, retry the conexion
@@ -115,30 +117,15 @@ void setup()
 
   // Relay
   pinMode(DOOR_RELAY, OUTPUT);
+  digitalWrite(DOOR_RELAY, LOW);
 
   // MQTT
   client.setServer(MQTTSERVER, MQTTPORT);
   client.setCallback(mqttCallback);
-}
 
-void mqttCallback(char* topic, byte* message, unsigned int length) {
-  Serial.print("Message arrived on topic: ");
-  Serial.print(topic);
-  Serial.print(". Message: ");
-  String command;
-  
-  for (int i = 0; i < length; i++) {
-    Serial.print((char)message[i]);
-    command += (char)message[i];
-  }
-  Serial.println();
-  if (String(topic) == RELAYTOPIC) {
-    if(command == "on"){
-      openMailbox();
-    }
-  } else if (String(topic) == PINTOPIC){
-      changePasswordPin(command);
-  }
+  // OLED
+  u8g2.begin();
+  u8g2.enableUTF8Print();
 }
 
 void loop()
@@ -192,10 +179,40 @@ void loop()
   usDistance = usTime / 59;
   sendLetterNotification(usDistance);
 
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_6x10_tf);
+  u8g2.setCursor(0, 15);
+  u8g2.drawStr(0,10,"Pulsa boton o");
+  u8g2.drawStr(0,25,"introduce PIN");
+  u8g2.drawStr(0,40,"seguido de #");
+  u8g2.sendBuffer();
+
   if (!client.connected()) {
     reconnectMQTT();
   }
   client.loop();
+}
+
+
+
+void mqttCallback(char* topic, byte* message, unsigned int length) {
+  Serial.print("Message arrived on topic: ");
+  Serial.print(topic);
+  Serial.print(". Message: ");
+  String command;
+  
+  for (int i = 0; i < length; i++) {
+    Serial.print((char)message[i]);
+    command += (char)message[i];
+  }
+  Serial.println();
+  if (String(topic) == RELAYTOPIC) {
+    if(command == "on"){
+      openMailbox();
+    }
+  } else if (String(topic) == PINTOPIC){
+      changePasswordPin(command);
+  }
 }
 
 void reconnectMQTT() {
@@ -206,7 +223,7 @@ void reconnectMQTT() {
       client.subscribe(PINTOPIC);
       client.subscribe(RELAYTOPIC);
     } else {
-      Serial.print("failed, rc=");
+      Serial.print("Mqtt connection failed, rc=");
       Serial.print(client.state());
       Serial.println(" try again in 5 seconds");
       // Wait 5 seconds before retrying
@@ -225,42 +242,7 @@ void sendOpenMailboxRequest(){
 
 void changePasswordPin(String pin){
   mailboxPIN = pin;
-  write_word(pinAddr, pin);
-}
-
-String read_word(int addr)
-{
-  String word;
-  char readChar;
-  int i = addr;
-
-  while (readChar != '\0')
-  {
-    readChar = char(EEPROM.read(i));
-    delay(10);
-    i++;
-
-    if (readChar != '\0')
-    {
-      word += readChar;
-    }
-  }
-
-  return word;
-}
-
-void write_word(int addr, String word)
-{
-  delay(10);
-  int str_len = word.length() + 1;
-
-  for (int i = addr; i < str_len + addr; ++i)
-  {
-    EEPROM.write(i, word.charAt(i - addr));
-  }
-
-  EEPROM.write(str_len + addr, '\0');
-  EEPROM.commit();
+  sendTimeMessageToTopic(PINCHANGEDTOPIC);
 }
 
 void openMailbox()
@@ -327,46 +309,89 @@ class MyServerCallbacks : public BLEServerCallbacks
 {
   void onConnect(BLEServer *pServer)
   {
-    Serial.println("Device connected");
+    Serial.println("BLE device connected");
   };
 
   void onDisconnect(BLEServer *pServer)
   {
-    Serial.println("Device disconnected");
+    Serial.println("BLE device disconnected");
   }
 };
 
-class MyCallbacks : public BLECharacteristicCallbacks
+class openCharacteristicCallbackBLE : public BLECharacteristicCallbacks
 {
-  void onWrite(BLECharacteristic *pCharacteristic)
+  void onWrite(BLECharacteristic *openCharacteristic)
   {
-    std::string rxValue = pCharacteristic->getValue();
+    std::string rxValue = openCharacteristic->getValue();
+    String command = "";
 
     if (rxValue.length() > 0)
     {
       Serial.println("*********");
-      Serial.print("Received value: ");
-      for (int i = 0; i < rxValue.length(); i++)
+      Serial.print("Received open value: ");
+      for (int i = 0; i < rxValue.length(); i++){
         Serial.print(rxValue[i]);
+        command += rxValue[i];
+      }
 
       Serial.println();
       Serial.println("*********");
+
+      if(command == "on"){
+        openMailbox();
+      }
+    }
+  }
+};
+
+class pinCharacteristicCallbackBLE : public BLECharacteristicCallbacks
+{
+  void onWrite(BLECharacteristic *openCharacteristic)
+  {
+    std::string rxValue = openCharacteristic->getValue();
+
+    String newPin = "";
+    if (rxValue.length() > 0)
+    {
+      Serial.println("*********");
+      Serial.print("Received new pin value: ");
+      for (int i = 0; i < rxValue.length(); i++){
+        newPin += rxValue[i];
+        Serial.print(rxValue[i]);
+      }
+      Serial.println();
+      Serial.println("*********");
+      changePasswordPin(newPin);
     }
   }
 };
 
 void enableBluetooth()
 {
+  // Init the BLE device with the name
   BLEDevice::init("SmartMailbox");
+
+  // Create the server
   pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
+
+  // Create the service
   BLEService *pService = pServer->createService(SERVICE_UUID);
-  pCharacteristic = pService->createCharacteristic(
-      CHARACTERISTIC_UUID,
+
+  // Create BLE characteristics
+  openCharacteristic = pService->createCharacteristic(
+      OPEN_CHARACTERISTIC_UUID,
       NIMBLE_PROPERTY::WRITE);
-  pCharacteristic->setCallbacks(new MyCallbacks());
+  openCharacteristic->setCallbacks(new openCharacteristicCallbackBLE());
+
+  pinCharacteristic = pService->createCharacteristic(
+    PIN_CHARACTERISTIC_UUID,
+    NIMBLE_PROPERTY::WRITE);
+  pinCharacteristic->setCallbacks(new pinCharacteristicCallbackBLE());
+
   pService->start();
 
+  // Start advertising
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
   pAdvertising->setScanResponse(true);
