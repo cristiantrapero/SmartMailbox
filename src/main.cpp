@@ -64,6 +64,7 @@ byte colPins[COLS] = {23, 25, 33, 32};
 Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 String mailboxPIN = "1234"; //TODO: Get from eeprom
 String inputPIN;
+String screenMessage;
 
 // Constants declarations
 const int CALL_BUTTON = 4;
@@ -77,6 +78,7 @@ long usDistance;
 long usTime;
 unsigned long lastLetterCall;
 unsigned long lastOpenCall;
+unsigned long lastMessageShow;
 
 // Functions prototype declaration
 void connectToWiFi();
@@ -89,8 +91,9 @@ void sendOpenMailboxRequest();
 void sendLetterNotification(int usDistance);
 void WiFiStationDisconnected(WiFiEvent_t event, WiFiEventInfo_t info);
 void mqttCallback(char* topic, byte* message, unsigned int length);
-String read_word(int addr);
+void showMessageOnScreen();
 void write_word(int addr, String word);
+String read_word(int addr);
 
 void setup()
 {
@@ -126,6 +129,8 @@ void setup()
   // OLED
   u8g2.begin();
   u8g2.enableUTF8Print();
+
+
 }
 
 void loop()
@@ -151,6 +156,8 @@ void loop()
       }
       else
       {
+        screenMessage = "PIN incorrecto";
+        lastMessageShow = millis();
         Serial.println("Password is incorrect, try again.");
       }
 
@@ -179,13 +186,7 @@ void loop()
   usDistance = usTime / 59;
   sendLetterNotification(usDistance);
 
-  u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_6x10_tf);
-  u8g2.setCursor(0, 15);
-  u8g2.drawStr(0,10,"Pulsa boton o");
-  u8g2.drawStr(0,25,"introduce PIN");
-  u8g2.drawStr(0,40,"seguido de #");
-  u8g2.sendBuffer();
+  showMessageOnScreen();
 
   if (!client.connected()) {
     reconnectMQTT();
@@ -193,7 +194,32 @@ void loop()
   client.loop();
 }
 
+void showMessageOnScreen(){
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_6x10_tf);
+  u8g2.setCursor(0, 15);
+  u8g2.drawStr(25,10,"Pulsa boton o");
+  u8g2.drawStr(25,25,"introduce PIN");
+  u8g2.drawStr(27,40,"seguido de #");
 
+  if (screenMessage != ""){
+    if (millis() - lastMessageShow <= 3*1000UL){
+      char message[50];
+      screenMessage.toCharArray(message, 50);
+      u8g2.drawStr(0, 60, message);
+    }else {
+      screenMessage = "";
+    }
+  } else{
+      u8g2.drawStr(0,60, "PIN:");
+      char pin[50];
+      inputPIN.toCharArray(pin, 50);
+      u8g2.drawStr(30, 60, pin);
+  }
+
+  u8g2.sendBuffer();
+
+}
 
 void mqttCallback(char* topic, byte* message, unsigned int length) {
   Serial.print("Message arrived on topic: ");
@@ -236,12 +262,16 @@ void sendOpenMailboxRequest(){
   if (millis() - lastOpenCall >= 5*1000UL){
     lastOpenCall = millis();
     Serial.println("Send mailbox open request");
+    screenMessage = "Apertura solicitada";
+    lastMessageShow = millis();
     sendTimeMessageToTopic(OPENTOPIC);
   }
 }
 
 void changePasswordPin(String pin){
   mailboxPIN = pin;
+  screenMessage = "Codigo PIN cambiado";
+  lastMessageShow = millis();
   sendTimeMessageToTopic(PINCHANGEDTOPIC);
 }
 
@@ -253,6 +283,8 @@ void openMailbox()
   digitalWrite(DOOR_RELAY, HIGH);
   delay(5000);
   digitalWrite(DOOR_RELAY, LOW);
+  screenMessage = "Buzon abierto";
+  lastMessageShow = millis();
 }
 
 void sendLetterNotification(int usDistance)
@@ -262,6 +294,8 @@ void sendLetterNotification(int usDistance)
       if (millis() - lastLetterCall >= 10*1000UL){
         lastLetterCall = millis();
         Serial.println("Send mailbox letter notification");
+        screenMessage = "Cartas introducidas";
+        lastMessageShow = millis();  
         sendTimeMessageToTopic(LETTERTOPIC);
     }
   }
