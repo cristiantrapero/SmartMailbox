@@ -51,3 +51,8 @@ ESP32 Libraries:
 2. User EEPROM in pin code and WiFi parameters
 3. Disable BLE advertising when is connected to a smarphone
 4. Encrypt comunications
+
+## References
+- ESP32 Bluetooth Low Energy: https://randomnerdtutorials.com/esp32-bluetooth-low-energy-ble-arduino-ide/
+- ESP32 Servidor BLE: https://www.prometec.net/esp32-servidor-ble/
+- Migrating from Bluedroid to NimBLE: https://h2zero.github.io/esp-nimble-cpp/md_docs__migration_guide.html
